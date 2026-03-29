@@ -1,6 +1,6 @@
 import transformers
 from transformers.models.jetmoe.modeling_jetmoe import JetMoeTopKGating
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 from torch import nn
 
@@ -11,24 +11,30 @@ TModule = TypeVar("TModule", bound=nn.Module)
 class StatefulGate(nn.Module):
     def __init__(self, input_size: int = 2048, experts: int = 8):
         super(StatefulGate, self).__init__()
-        self.input_size: int = input_size
-        self.experts: int = experts
-
+        self.input_size = input_size
+        self.experts = experts
         self.linear = nn.Linear(input_size + experts, experts)
+        
+        self.register_buffer("gate_state", torch.zeros(1, experts))
+        self.has_initialized = False
 
-        self.gate_state: torch.Tensor | None = None
-    
     def reset_state(self):
-        self.gate_state = None
+        self.gate_state.zero_()
+        self.has_initialized = False
     
     def forward(self, x: torch.Tensor):
-        if self.gate_state is None:
-            self.gate_state = torch.zeros(x.size(0), self.experts, device=x.device)
+        seq_len = x.size(0)
+
+        if not self.has_initialized:
+            self.gate_state = torch.zeros(1, self.experts, device=x.device)
+            self.has_initialized = True
         
-        combined = torch.cat((x, self.gate_state[:x.shape[0]]), dim=1)
+        state_input = self.gate_state.expand(seq_len, -1)
+
+        combined = torch.cat((x, state_input), dim=1)
         output = self.linear(combined)
 
-        self.gate_state = output.detach()
+        self.gate_state = output[-1:].detach()
 
         return output
 
@@ -39,8 +45,9 @@ class DeconstructedJetMoE:
         self.model: transformers.JetMoeModel = self.base.model
         self.tokenizer = AutoTokenizer.from_pretrained("jetmoe/jetmoe-8b")
 
-        self.attn_gates = [attn_gating_function() for _ in range(24)]
-        self.mlp_gates = [mlp_gating_function() for _ in range(24)]
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.attn_gates = [attn_gating_function().to(device) for _ in range(24)]
+        self.mlp_gates = [mlp_gating_function().to(device) for _ in range(24)]
 
         self.assign_functions()
 
