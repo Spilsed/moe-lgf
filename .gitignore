@@ -5,6 +5,8 @@ build/
 dist/
 wheels/
 *.egg-info
+llama.cpp
+jetmoe-local
 
 # Virtual environments
 .venv
