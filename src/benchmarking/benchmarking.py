@@ -2,12 +2,16 @@
 from ollama import chat, ChatResponse, ResponseError
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
-import signal,sys,time
+from accelerate import Accelerator
+import signal,sys,time,torch
+
+torch.set_num_threads(12)
 
 ollamaOn=False
 thinking=False
 model=""
 num_rows=100
+whole_set=False
 split="test"
 subset="ARC-Challenge"
 dataset="allenai/ai2_arc"
@@ -22,10 +26,14 @@ if '-o' in sys.argv:
     model=sys.argv[1+sys.argv.index("-o")]
 else :
     model="inc/jetmoe-local"
+    accelerator = Accelerator()
     tokenizer=AutoTokenizer.from_pretrained(model,local_files_only=True, trust_remote_code=True)
-    llm=AutoModelForCausalLM.from_pretrained(model,local_files_only=True, trust_remote_code=True)
+    llm=AutoModelForCausalLM.from_pretrained(model,local_files_only=True, trust_remote_code=True, device_map={"":accelerator.device})
 if '-c' in sys.argv:
-    num_rows=int(sys.argv[1+sys.argv.index("-c")])
+    if (a:=sys.argv[1+sys.argv.index("-c")])=="all":
+        whole_set=True
+    else:
+        num_rows=int(a)
 if '-t' in sys.argv:
     thinking=True
 if '-s' in sys.argv:
@@ -63,7 +71,7 @@ def send_and_grade(model: str, question: str, choices: dict[str:list[str]], answ
             tokenize=False,
             add_generation_prompt=True
         )
-        m_input=tokenizer(prompt,return_tensors='pt').to(llm.device)
+        m_input=tokenizer(prompt,return_tensors='pt').to(accelerator.device)
         t=time.time()
         print(t-start,"Seconds,",m_input['input_ids'].shape[-1],"Input Tokens") 
         gen_ids=llm.generate(
@@ -71,13 +79,13 @@ def send_and_grade(model: str, question: str, choices: dict[str:list[str]], answ
             do_sample=True,
             temperature=.8,
             max_new_tokens=20,
-            pad_token_id=tokenizer.eos_token_id
+            pad_token_id=tokenizer.eos_token_id,
         )
         print(time.time()-t,"Seconds,",gen_ids.shape[1],"Output Tokens")
         input_length=m_input['input_ids'].shape[-1]
         response=tokenizer.decode(gen_ids[0][input_length:],skip_special_tokens=True).strip()
         print(model,"response:",response)
-        answer_lookup={"1":"A","2":"B","3":"C","4":"D"}
+        answer_lookup={"1":"A","2":"B","3":"C","4":"D","A":"1","B":"2","C":"3","D":"4"}
         if response.startswith(answer):
             print("correct")
             return True
@@ -89,7 +97,10 @@ def send_and_grade(model: str, question: str, choices: dict[str:list[str]], answ
 
     return False
 
-data = load_dataset(dataset,subset,split=split, streaming=True).remove_columns("id").shuffle(time.time_ns()).take(num_rows)
+if whole_set:
+    data = load_dataset(dataset,subset,split=split, streaming=True).remove_columns("id").shuffle(time.time_ns())
+else:
+    data = load_dataset(dataset,subset,split=split, streaming=True).remove_columns("id").shuffle(time.time_ns()).take(num_rows)
 questions = data["question"]
 choices = data["choices"]
 answers = data["answerKey"]
