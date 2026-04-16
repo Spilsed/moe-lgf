@@ -73,7 +73,7 @@ def send_and_grade(model: str, question: str, choices: dict[str:list[str]], answ
         )
         m_input=tokenizer(prompt,return_tensors='pt').to(accelerator.device)
         t=time.time()
-        print(t-start,"Seconds,",m_input['input_ids'].shape[-1],"Input Tokens") 
+        print(t-start,"Seconds,",input_length:=m_input['input_ids'].shape[-1],"Input Tokens") 
         gen_ids=llm.generate(
             **m_input,
             do_sample=True,
@@ -81,8 +81,7 @@ def send_and_grade(model: str, question: str, choices: dict[str:list[str]], answ
             max_new_tokens=20,
             pad_token_id=tokenizer.eos_token_id,
         )
-        print(time.time()-t,"Seconds,",gen_ids.shape[1],"Output Tokens")
-        input_length=m_input['input_ids'].shape[-1]
+        print(time.time()-t,"Seconds,",gen_ids.shape[1]-input_length,"Output Tokens")
         response=tokenizer.decode(gen_ids[0][input_length:],skip_special_tokens=True).strip()
         print(model,"response:",response)
         answer_lookup={"1":"A","2":"B","3":"C","4":"D","A":"1","B":"2","C":"3","D":"4"}
@@ -98,9 +97,10 @@ def send_and_grade(model: str, question: str, choices: dict[str:list[str]], answ
     return False
 
 if whole_set:
-    data = load_dataset(dataset,subset,split=split, streaming=True).remove_columns("id").shuffle(time.time_ns())
+    data = load_dataset(dataset,subset,split=split).remove_columns("id").shuffle(time.time_ns())
+    num_rows=sum(1 for _ in data["question"])
 else:
-    data = load_dataset(dataset,subset,split=split, streaming=True).remove_columns("id").shuffle(time.time_ns()).take(num_rows)
+    data = load_dataset(dataset,subset,split=split).remove_columns("id").shuffle(time.time_ns()).take(num_rows)
 questions = data["question"]
 choices = data["choices"]
 answers = data["answerKey"]
