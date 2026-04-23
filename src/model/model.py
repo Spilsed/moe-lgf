@@ -13,7 +13,7 @@ class StatefulGate(nn.Module):
         super(StatefulGate, self).__init__()
         self.input_size = input_size
         self.experts = experts
-        self.linear = nn.Linear(input_size + experts, experts)
+        self.linear = nn.Linear(input_size + experts, experts, bias=False)
         
         self.register_buffer("gate_state", torch.zeros(1, experts))
         self.has_initialized = False
@@ -41,9 +41,9 @@ class StatefulGate(nn.Module):
 class DeconstructedJetMoE:
     def __init__(self, attn_gating_function: Type[TModule], mlp_gating_function: Type[TModule]):
         self.base = AutoModelForCausalLM.from_pretrained(
-            "jetmoe/jetmoe-8b", dtype="auto", device_map="auto")
+            "/home/titan/Downloads/moe-lgf/inc/jetmoe-local", local_files_only=True, dtype="auto", device_map="auto")
         self.model: transformers.JetMoeModel = self.base.model
-        self.tokenizer = AutoTokenizer.from_pretrained("jetmoe/jetmoe-8b")
+        self.tokenizer = AutoTokenizer.from_pretrained("/home/titan/Downloads/moe-lgf/inc/jetmoe-local", local_files_only=True)
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.attn_gates = [attn_gating_function().to(device) for _ in range(24)]
@@ -75,8 +75,23 @@ class DeconstructedJetMoE:
             if not isinstance(attn_router, JetMoeTopKGating) or not isinstance(mlp_router, JetMoeTopKGating):
                 raise Exception('Router not found in MoE module :(')
 
+            original_weights = attn_router.layer.weight.data
+            with torch.no_grad():
+                self.attn_gates[i].linear.weight[:, :2048] = original_weights
+                self.attn_gates[i].linear.weight[:, 2048:] = 0.0 
+            
+            original_weights = mlp_router.layer.weight.data
+            with torch.no_grad():
+                self.mlp_gates[i].linear.weight[:, :2048] = original_weights
+                self.mlp_gates[i].linear.weight[:, 2048:] = 0.0 
+
             attn_router.layer = self.attn_gates[i]
             mlp_router.layer = self.mlp_gates[i]
 
     def __str__(self) -> str:
         return ""
+
+if __name__ == "__main__":
+    model = DeconstructedJetMoE(StatefulGate, StatefulGate)
+
+    print(model.generate("Hello, "))

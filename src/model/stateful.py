@@ -8,28 +8,36 @@ from transformers.utils.generic import TransformersKwargs
 from transformers.cache_utils import DynamicCache
 from transformers.masking_utils import create_causal_mask
 
+from typing import List
+
 class StatefulGate(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
+    def __init__(self, input_dim, hidden_dim, window_size: int = 5):
         super(StatefulGate, self).__init__()
         self.hidden_dim = hidden_dim
+        self.window_size = window_size
         
         self.gate_layer = nn.Linear(input_dim + hidden_dim, hidden_dim)
         self.sigmoid = nn.Sigmoid()
         
-        self.state = None
+        self.state_buffer: List[Tensor] = []
 
     def reset_state(self):
-        self.state = None
+        self.state_buffer = []
 
     def forward(self, x):
-        if self.state is None:
-            self.state = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+        batch_size = x.size(0)
         
-        combined = torch.cat((x, self.state), dim=1)
+        if not self.state_buffer:
+            for _ in range(self.window_size):
+                self.state_buffer.append(torch.zeros(batch_size, self.hidden_dim, device=x.device))
+        
+        states_cat = torch.cat(self.state_buffer, dim=1)
+        combined = torch.cat((x, states_cat), dim=1)
         
         gate_output = self.sigmoid(self.gate_layer(combined))
         
-        self.state = gate_output.detach()
+        self.state_buffer.pop(0)
+        self.state_buffer.append(gate_output.detach())
         
         return gate_output
 
